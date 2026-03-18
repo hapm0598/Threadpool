@@ -1,12 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+##########################################
+# CLEANUP STALE PROCESSES BEFORE START
+##########################################
 echo "[collector] Cleaning stale processes..."
-pkill -f dotnet-counters 2>/dev/null || true
-pkill -f dotnet-trace    2>/dev/null || true
-pkill -f dotnet-dump     2>/dev/null || true
-pkill -f azcopy          2>/dev/null || true
+pkill -f dotnet-counters    2>/dev/null || true
+pkill -f dotnet-trace       2>/dev/null || true
+pkill -f dotnet-dump        2>/dev/null || true
+pkill -f azcopy             2>/dev/null || true
 echo "[collector] Cleanup OK."
+
 ##########################################
 # CONFIG
 ##########################################
@@ -42,14 +46,25 @@ fi
 ##########################################
 # FIND .NET PID + ENV VARS
 ##########################################
-pid=$("$TOOLS_DIR/dotnet-dump" ps | grep "/usr/share/dotnet/dotnet" | grep -v grep | awk '{print $2}' || true)
+pid=$("$TOOLS_DIR/dotnet-dump" ps \
+    | grep "/usr/share/dotnet/dotnet" \
+    | grep -v grep \
+    | awk '{print $2}' || true)
+
 if [[ -z "$pid" ]]; then
     echo "[error] No .NET PID found"
     exit 1
 fi
 
-instance=$(cat /proc/$pid/environ | tr '\0' '\n' | grep -w COMPUTERNAME | cut -d'=' -f2)
-sas_url=$(cat /proc/$pid/environ | tr '\0' '\n' | grep -w DIAGNOSTICS_AZUREBLOBCONTAINERSASURL | cut -d'=' -f2)
+instance=$(cat /proc/$pid/environ \
+    | tr '\0' '\n' \
+    | grep -w COMPUTERNAME \
+    | cut -d'=' -f2)
+
+sas_url=$(cat /proc/$pid/environ \
+    | tr '\0' '\n' \
+    | grep -w DIAGNOSTICS_AZUREBLOBCONTAINERSASURL \
+    | cut -d'=' -f2)
 
 ##########################################
 # CREATE FOLDER
@@ -63,17 +78,18 @@ mkdir -p "$OUTPUT_DIR"
 ##########################################
 upload_and_cleanup() {
     local file="$1"
+
     if [[ ! -e "$file" ]]; then return 0; fi
 
     local dest="${sas_url%/}/${OUTPUT_DIR}/$(basename "$file")"
     local attempt=1
 
     while [[ $attempt -le $MAX_UPLOAD_RETRY ]]; do
-        echo "[upload] $file (attempt $attempt)"
+        echo "[upload] Uploading $file (attempt $attempt)..."
         OUT=$("$TOOLS_DIR/azcopy" copy "$file" "$dest" 2>&1 || true)
 
         if echo "$OUT" | grep -q "Final Job Status: Completed"; then
-            echo "[upload] OK → removing $file"
+            echo "[upload] SUCCESS → deleting $file"
             rm -f "$file"
             return 0
         fi
@@ -82,20 +98,22 @@ upload_and_cleanup() {
         sleep 3
     done
 
-    echo "[error] Upload failed → keeping $file" >> "$WORKDIR/upload_errors.log"
+    echo "[upload] FAILED → keeping $file" >> "$WORKDIR/upload_errors.log"
     return 1
 }
 
 ##########################################
-# CAPTURE STACK
+# CAPTURE STACKTRACE
 ##########################################
 stack_file="$OUTPUT_DIR/stack_${instance}_${TS}.txt"
-"$TOOLS_DIR/dotnet-stack" report -p "$pid" > "$stack_file" || true
+echo "[stack] Collecting stacktrace..."
+"$TOOLS_DIR/dotnet-stack" report -p "$pid" > "$stack_file" 2>/dev/null || true
 
 ##########################################
 # CAPTURE COUNTERS (300s)
 ##########################################
 counter_file="$OUTPUT_DIR/counters_${instance}_${TS}.csv"
+echo "[counters] Collecting counters for ${COUNTERS_DURATION}s..."
 
 "$TOOLS_DIR/dotnet-counters" collect \
     --process-id "$pid" \
@@ -103,15 +121,16 @@ counter_file="$OUTPUT_DIR/counters_${instance}_${TS}.csv"
     --refresh-interval 1 \
     --format csv \
     --output "$counter_file" > /dev/null &
-CPID=$!
 
+CPID=$!
 sleep "$COUNTERS_DURATION"
-kill "$CPID" || true
+kill "$CPID" 2>/dev/null || true
 
 ##########################################
 # CAPTURE TRACE (90s)
 ##########################################
 trace_file="$OUTPUT_DIR/trace_${instance}_${TS}.nettrace"
+echo "[trace] Collecting trace for ${TRACE_DURATION}s..."
 
 "$TOOLS_DIR/dotnet-trace" collect \
     -p "$pid" \
@@ -127,20 +146,23 @@ dump_file=""
 if [[ "$MODE" == "manual" ]]; then
     if [[ "$DUMP_POLICY" == "yes" ]]; then
         dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
+        echo "[dump] Collecting dump..."
         "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
     fi
-
 else
-    # AUTO MODE: dump only once
+    # AUTO MODE — dump only once
     if [[ ! -e "$WORKDIR/dump_taken.lock" ]]; then
+        echo "[dump] AUTO MODE: First dump → Creating lock"
         touch "$WORKDIR/dump_taken.lock"
         dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
         "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
+    else
+        echo "[dump] AUTO MODE: Dump already taken → Skipping"
     fi
 fi
 
 ##########################################
-# UPLOAD + CLEANUP
+# UPLOAD & CLEANUP
 ##########################################
 upload_and_cleanup "$stack_file"
 sleep "$UPLOAD_GAP"
@@ -156,5 +178,5 @@ if [[ -n "$dump_file" ]]; then
     sleep "$UPLOAD_GAP"
 fi
 
-echo "[collector] DONE — all files uploaded (or preserved if failed)."
+echo "[collector] DONE — all files uploaded (or preserved on failure)."
 exit 0
