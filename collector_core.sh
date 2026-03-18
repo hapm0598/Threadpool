@@ -18,18 +18,18 @@ MAX_UPLOAD_RETRY=5
 # ARGUMENTS
 ##########################################
 MODE="manual"
-DUMP_MODE="ask"
+DUMP_POLICY="ask"
 
 if [[ "${1:-}" == "--auto" ]]; then
     MODE="auto"
-    DUMP_MODE="auto"
+    DUMP_POLICY="auto"
 elif [[ "${1:-}" == "--manual" ]]; then
     MODE="manual"
     shift
     if [[ "${1:-}" == "--manual-dump" ]]; then
-        DUMP_MODE="yes"
+        DUMP_POLICY="yes"
     else
-        DUMP_MODE="no"
+        DUMP_POLICY="no"
     fi
 fi
 
@@ -49,42 +49,48 @@ sas_url=$(cat /proc/$pid/environ | tr '\0' '\n' | grep -w DIAGNOSTICS_AZUREBLOBC
 # CREATE FOLDER
 ##########################################
 TS=$(date '+%Y%m%d_%H%M%S')
-UPLOAD_DIR="${instance}_${TS}"
-mkdir -p "$UPLOAD_DIR"
+OUTPUT_DIR="${instance}_${TS}"
+mkdir -p "$OUTPUT_DIR"
 
 ##########################################
-# UPLOAD FUNCTION
+# UPLOAD FUNCTION (with cleanup)
 ##########################################
-upload_file() {
+upload_and_cleanup() {
     local file="$1"
-    local dest="${sas_url%/}/${UPLOAD_DIR}/$(basename "$file")"
+    if [[ ! -e "$file" ]]; then return 0; fi
 
+    local dest="${sas_url%/}/${OUTPUT_DIR}/$(basename "$file")"
     local attempt=1
+
     while [[ $attempt -le $MAX_UPLOAD_RETRY ]]; do
         echo "[upload] $file (attempt $attempt)"
-        out=$("$TOOLS_DIR/azcopy" copy "$file" "$dest" 2>&1 || true)
-        if echo "$out" | grep -q "Final Job Status: Completed"; then
-            echo "[upload] OK"
+        OUT=$("$TOOLS_DIR/azcopy" copy "$file" "$dest" 2>&1 || true)
+
+        if echo "$OUT" | grep -q "Final Job Status: Completed"; then
+            echo "[upload] OK → removing $file"
+            rm -f "$file"
             return 0
         fi
+
         attempt=$((attempt+1))
         sleep 3
     done
 
-    echo "[upload] FAILED"
+    echo "[error] Upload failed → keeping $file" >> "$WORKDIR/upload_errors.log"
     return 1
 }
 
 ##########################################
-# STACKTRACE
+# CAPTURE STACK
 ##########################################
-stack_file="$UPLOAD_DIR/stack_${instance}_${TS}.txt"
+stack_file="$OUTPUT_DIR/stack_${instance}_${TS}.txt"
 "$TOOLS_DIR/dotnet-stack" report -p "$pid" > "$stack_file" || true
 
 ##########################################
-# COUNTERS (300s)
+# CAPTURE COUNTERS (300s)
 ##########################################
-counter_file="$UPLOAD_DIR/counter_${instance}_${TS}.csv"
+counter_file="$OUTPUT_DIR/counters_${instance}_${TS}.csv"
+
 "$TOOLS_DIR/dotnet-counters" collect \
     --process-id "$pid" \
     --counters "System.Runtime,System.Threading.Tasks.TplEventSource,Microsoft.AspNetCore.Hosting,Microsoft-AspNetCore-Server-Kestrel" \
@@ -97,9 +103,10 @@ sleep "$COUNTERS_DURATION"
 kill "$CPID" || true
 
 ##########################################
-# TRACE (90s)
+# CAPTURE TRACE (90s)
 ##########################################
-trace_file="$UPLOAD_DIR/trace_${instance}_${TS}.nettrace"
+trace_file="$OUTPUT_DIR/trace_${instance}_${TS}.nettrace"
+
 "$TOOLS_DIR/dotnet-trace" collect \
     -p "$pid" \
     --providers "Microsoft-DotNETCore-SampleProfiler,Microsoft-Windows-DotNETRuntime:0x0001C001:5,Microsoft-AspNetCore-Hosting:0xFFFFFFFFFFFFFFFF:4,Microsoft-AspNetCore-Server-Kestrel:0xFFFFFFFFFFFFFFFF:4,System.Net.Http:0xFFFFFFFFFFFFFFFF:4,System.Net.Sockets:0xFFFFFFFFFFFFFFFF:4,Microsoft.Data.SqlClient.EventSource:5" \
@@ -107,39 +114,41 @@ trace_file="$UPLOAD_DIR/trace_${instance}_${TS}.nettrace"
     --duration "00:01:30" > /dev/null || true
 
 ##########################################
-# DUMP
+# CAPTURE DUMP
 ##########################################
 dump_file=""
+
 if [[ "$MODE" == "manual" ]]; then
-    if [[ "$DUMP_MODE" == "yes" ]]; then
-        dump_file="$UPLOAD_DIR/dump_${instance}_${TS}.dmp"
+    if [[ "$DUMP_POLICY" == "yes" ]]; then
+        dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
         "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
     fi
+
 else
-    # AUTO MODE — dump only once
-    if [[ ! -e "dump_taken.lock" ]]; then
-        touch dump_taken.lock
-        dump_file="$UPLOAD_DIR/dump_${instance}_${TS}.dmp"
+    # AUTO MODE: dump only once
+    if [[ ! -e "$WORKDIR/dump_taken.lock" ]]; then
+        touch "$WORKDIR/dump_taken.lock"
+        dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
         "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
     fi
 fi
 
 ##########################################
-# UPLOAD ALL
+# UPLOAD + CLEANUP
 ##########################################
-upload_file "$stack_file"
+upload_and_cleanup "$stack_file"
 sleep "$UPLOAD_GAP"
 
-upload_file "$counter_file"
+upload_and_cleanup "$counter_file"
 sleep "$UPLOAD_GAP"
 
-upload_file "$trace_file"
+upload_and_cleanup "$trace_file"
 sleep "$UPLOAD_GAP"
 
 if [[ -n "$dump_file" ]]; then
-    upload_file "$dump_file"
+    upload_and_cleanup "$dump_file"
     sleep "$UPLOAD_GAP"
 fi
 
-echo "[collector] DONE"
+echo "[collector] DONE — all files uploaded (or preserved if failed)."
 exit 0
