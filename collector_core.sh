@@ -22,7 +22,8 @@ cd "$WORKDIR"
 TRACE_DURATION_SECONDS=90
 COUNTERS_DURATION=300
 COUNTER_LIST="System.Runtime,System.Threading.Tasks.TplEventSource,Microsoft.AspNetCore.Hosting,Microsoft-AspNetCore-Server-Kestrel"
-UPLOAD_GAP=5
+UPLOAD_INITIAL_DELAY=20
+UPLOAD_GAP=10
 MAX_UPLOAD_RETRY=5
 
 ##########################################
@@ -45,7 +46,7 @@ elif [[ "${1:-}" == "--manual" ]]; then
 fi
 
 ##########################################
-# GET PID USING OLD WORKING PIPELINE
+# PID DETECTION (OLD WORKING PIPELINE)
 ##########################################
 pid=$("$TOOLS_DIR/dotnet-dump" ps \
       | grep "/usr/share/dotnet/dotnet" \
@@ -54,67 +55,88 @@ pid=$("$TOOLS_DIR/dotnet-dump" ps \
       | cut -d" " -f2 || true)
 
 if [[ -z "${pid:-}" ]]; then
-    echo "[error] Could not find .NET PID"
+    echo "[error] Could not find any running .NET process"
     exit 1
 fi
 
 ##########################################
-# GET ENV FROM PID
+# READ ENV VARS FROM PID
 ##########################################
-instance=$(cat /proc/$pid/environ | tr '\0' '\n' | grep -w COMPUTERNAME | cut -d'=' -f2)
-sas_url=$(cat /proc/$pid/environ | tr '\0' '\n' | grep -w DIAGNOSTICS_AZUREBLOBCONTAINERSASURL | cut -d'=' -f2)
+get_env_from_pid() {
+    local pid="$1" key="$2"
+    local val
+    val=$(cat "/proc/$pid/environ" \
+          | tr '\0' '\n' \
+          | grep -w "$key" || true)
+    val=${val#*=}
+    echo "${val:-}"
+}
+
+instance=$(get_env_from_pid "$pid" "COMPUTERNAME")
+sas_url=$(get_env_from_pid "$pid" "DIAGNOSTICS_AZUREBLOBCONTAINERSASURL")
 
 if [[ -z "$instance" ]]; then
-    echo "[error] Cannot read COMPUTERNAME"
+    echo "[error] Could not find COMPUTERNAME environment variable"
     exit 1
 fi
 
 if [[ -z "$sas_url" ]]; then
-    echo "[error] Cannot read DIAGNOSTICS_AZUREBLOBCONTAINERSASURL"
+    echo "[error] Could not find SAS URL"
     exit 1
 fi
 
 ##########################################
-# CREATE OUTPUT FOLDER
+# CREATE UPLOAD SUBDIR (OLD STYLE)
 ##########################################
-TS=$(date '+%Y%m%d_%H%M%S')
-OUTPUT_DIR="${instance}_${TS}"
-mkdir -p "$OUTPUT_DIR"
+UPLOAD_FOLDER_TS=$(date '+%Y%m%d_%H%M%S')
+UPLOAD_SUBDIR="${instance}_${UPLOAD_FOLDER_TS}"
 
 ##########################################
-# UPLOAD FUNCTION (UPLOAD → DELETE)
+# UPLOAD FUNCTION (100% ORIGINAL LOGIC)
 ##########################################
-upload_and_cleanup() {
-    local file="$1"
-    if [[ ! -e "$file" ]]; then return 0; fi
-
-    local dest="${sas_url%/}/${OUTPUT_DIR}/$(basename "$file")"
+upload_to_blob() {
+    local file_path="$1" sas_url="$2"
     local attempt=1
 
-    while [[ $attempt -le $MAX_UPLOAD_RETRY ]]; do
-        echo "[upload] Uploading $file (attempt $attempt)..."
-        OUT=$("$TOOLS_DIR/azcopy" copy "$file" "$dest" 2>&1 || true)
+    local base sas_query filename dest
 
-        if echo "$OUT" | grep -q "Final Job Status: Completed"; then
-            echo "[upload] SUCCESS → removing $file"
-            rm -f "$file"
+    if [[ "$sas_url" == *\?* ]]; then
+        base="${sas_url%%\?*}"
+        sas_query="?${sas_url#*\?}"
+    else
+        base="$sas_url"
+        sas_query=""
+    fi
+
+    base="${base%/}"
+    filename="$(basename "$file_path")"
+    dest="${base}/${UPLOAD_SUBDIR}/${filename}${sas_query}"
+
+    while [[ $attempt -le $MAX_UPLOAD_RETRY ]]; do
+        echo "[upload] Uploading $file_path -> $dest (attempt $attempt/$MAX_UPLOAD_RETRY)..."
+        azcopy_output=$("$TOOLS_DIR/azcopy" copy "$file_path" "$dest" 2>&1 || true)
+
+        if echo "$azcopy_output" | grep -q "Final Job Status: Completed"; then
+            echo "[upload] $file_path uploaded."
             return 0
         fi
 
+        echo "[upload] Upload failed, retrying..."
         attempt=$((attempt+1))
         sleep 3
     done
 
-    echo "[upload] FAILED → keeping $file" >> "$WORKDIR/upload_errors.log"
+    echo "[upload] Upload $file_path failed after $MAX_UPLOAD_RETRY attempts."
     return 1
 }
 
 ##########################################
-# 1) START COUNTERS (BACKGROUND, 300s)
+# 1) COUNTERS (BACKGROUND, OLD LOGIC)
 ##########################################
-counter_file="$OUTPUT_DIR/counters_${instance}_${TS}.csv"
+echo "[counter] Starting dotnet-counters in background..."
+counter_file="countertrace_${instance}_$(date '+%Y%m%d_%H%M%S').csv"
+COUNTERS_START_TS=$(date +%s)
 
-echo "[counter] Starting dotnet-counters 300s (background)..."
 "$TOOLS_DIR/dotnet-counters" collect \
     --process-id "$pid" \
     --counters "$COUNTER_LIST" \
@@ -123,59 +145,102 @@ echo "[counter] Starting dotnet-counters 300s (background)..."
     --output "$counter_file" > /dev/null &
 
 COUNTERS_PID=$!
-COUNTERS_START_TS=$(date +%s)
 
 ##########################################
-# 2) CAPTURE STACKTRACE (FAST)
+# 2) STACKTRACE (OLD LOGIC)
 ##########################################
-stack_file="$OUTPUT_DIR/stack_${instance}_${TS}.txt"
-echo "[stack] Capturing stacktrace..."
-"$TOOLS_DIR/dotnet-stack" report -p "$pid" > "$stack_file" 2>/dev/null || true
+echo "[stack] Capturing stack trace..."
+stack_file="stacktrace_${instance}_$(date '+%Y%m%d_%H%M%S').txt"
+
+"$TOOLS_DIR/dotnet-stack" report -p "$pid" > "$stack_file" 2>/dev/null || {
+    echo "[stack] Stack trace collection failed"
+    rm -f "$stack_file"
+}
+
+if [[ -s "$stack_file" ]]; then
+    echo "[stack] Stack trace collected."
+else
+    echo "[stack] Missing or empty."
+fi
 
 ##########################################
-# 3) CAPTURE TRACE (BLOCK 90s)
+# 3) NETTRACE (OLD LOGIC — 90s)
 ##########################################
-trace_file="$OUTPUT_DIR/trace_${instance}_${TS}.nettrace"
+echo "[trace] Collecting nettrace for ${TRACE_DURATION_SECONDS}s..."
+trace_file="trace_${instance}_$(date '+%Y%m%d_%H%M%S').nettrace"
 
-echo "[trace] Collecting trace for ${TRACE_DURATION_SECONDS}s..."
 "$TOOLS_DIR/dotnet-trace" collect \
     -p "$pid" \
     --providers "Microsoft-DotNETCore-SampleProfiler,Microsoft-Windows-DotNETRuntime:0x0001C001:5,Microsoft-AspNetCore-Hosting:0xFFFFFFFFFFFFFFFF:4,Microsoft-AspNetCore-Server-Kestrel:0xFFFFFFFFFFFFFFFF:4,System.Net.Http:0xFFFFFFFFFFFFFFFF:4,System.Net.Sockets:0xFFFFFFFFFFFFFFFF:4,Microsoft.Data.SqlClient.EventSource:5" \
     -o "$trace_file" \
-    --duration "00:01:30" > /dev/null || true
+    --duration "00:01:30" > /dev/null || {
+        echo "[trace] Nettrace collection failed"
+        touch "$trace_file.failed"
+    }
+
+if [[ -s "$trace_file" ]]; then
+    echo "[trace] Nettrace collected."
+else
+    echo "[trace] Missing or empty."
+fi
 
 ##########################################
-# 4) OPTIONAL DUMP (AFTER TRACE)
+# 4) DUMP (OLD LOGIC — AFTER TRACE)
 ##########################################
 dump_file=""
 
 if [[ "$MODE" == "manual" ]]; then
     if [[ "$DUMP_POLICY" == "yes" ]]; then
-        dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
-        echo "[dump] Collecting dump..."
-        "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
-    fi
-else
-    # AUTO MODE: dump only once
-    if [[ ! -e "$WORKDIR/dump_taken.lock" ]]; then
-        echo "[dump] AUTO MODE: Creating dump lock"
-        touch "$WORKDIR/dump_taken.lock"
-        dump_file="$OUTPUT_DIR/dump_${instance}_${TS}.dmp"
-        "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || true
+        echo "[dump] Collecting memory dump..."
+        dump_file="dump_${instance}_$(date '+%Y%m%d_%H%M%S').dmp"
+
+        "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || {
+            echo "[dump] Memory dump collection failed"
+            rm -f "$dump_file"
+            dump_file=""
+        }
+
+        if [[ -s "$dump_file" ]]; then
+            echo "[dump] Memory dump collected."
+        else
+            echo "[dump] Missing or empty."
+        fi
     else
-        echo "[dump] AUTO MODE: dump already taken → skipping"
+        echo "[dump] Skipping memory dump collection as requested."
+    fi
+
+else
+    # AUTO MODE: only once
+    if [[ ! -e "$WORKDIR/dump_taken.lock" ]]; then
+        touch "$WORKDIR/dump_taken.lock"
+        echo "[dump] AUTO MODE: Collecting memory dump (first time)..."
+
+        dump_file="dump_${instance}_$(date '+%Y%m%d_%H%M%S').dmp"
+        "$TOOLS_DIR/dotnet-dump" collect -p "$pid" -o "$dump_file" > /dev/null || {
+            echo "[dump] Memory dump collection failed"
+            rm -f "$dump_file"
+            dump_file=""
+        }
+
+        if [[ -s "$dump_file" ]]; then
+            echo "[dump] Memory dump collected."
+        else
+            echo "[dump] Missing or empty."
+        fi
+    else
+        echo "[dump] AUTO MODE: Dump already taken, skipping."
     fi
 fi
 
 ##########################################
-# WAIT COUNTERS FULL 300s
+# ENSURE COUNTERS FULL 300s (OLD LOGIC)
 ##########################################
 COUNTERS_END_TS=$(date +%s)
 ELAPSED=$((COUNTERS_END_TS - COUNTERS_START_TS))
 
 if [[ "$ELAPSED" -lt "$COUNTERS_DURATION" ]]; then
     REMAIN=$((COUNTERS_DURATION - ELAPSED))
-    echo "[counter] Ensuring 300s duration → sleeping ${REMAIN}s..."
+    echo "[counter] Ensuring minimum duration, sleeping ${REMAIN}s..."
     sleep "$REMAIN"
 fi
 
@@ -183,22 +248,50 @@ echo "[counter] Stopping dotnet-counters..."
 kill "$COUNTERS_PID" 2>/dev/null || true
 wait "$COUNTERS_PID" 2>/dev/null || true
 
+if [[ -s "$counter_file" ]]; then
+    echo "[counter] Counter trace collected."
+else
+    echo "[error] Counter trace missing or empty."
+fi
+
 ##########################################
-# UPLOAD (WITH DELETE)
+# UPLOAD (OLD ORDER + OLD MESSAGES)
 ##########################################
-upload_and_cleanup "$stack_file"
-sleep "$UPLOAD_GAP"
+echo "All data have been collected, waiting for ${UPLOAD_INITIAL_DELAY}s before uploading to Blob."
+sleep "$UPLOAD_INITIAL_DELAY"
 
-upload_and_cleanup "$counter_file"
-sleep "$UPLOAD_GAP"
-
-upload_and_cleanup "$trace_file"
-sleep "$UPLOAD_GAP"
-
-if [[ -n "$dump_file" ]]; then
-    upload_and_cleanup "$dump_file"
+# trace
+if [[ -e "$trace_file" ]]; then
+    echo "[trace] Uploading nettrace..."
+    upload_to_blob "$trace_file" "$sas_url" || echo "[error] Nettrace upload failed"
     sleep "$UPLOAD_GAP"
 fi
 
-echo "[collector] DONE — all data collected and uploaded."
+# dump
+if [[ -n "$dump_file" && -e "$dump_file" ]]; then
+    echo "[dump] Uploading memory dump..."
+    upload_to_blob "$dump_file" "$sas_url" || echo "[error] Memory dump upload failed"
+    sleep "$UPLOAD_GAP"
+fi
+
+# stack
+if [[ -e "$stack_file" ]]; then
+    echo "[stack] Uploading stack trace..."
+    upload_to_blob "$stack_file" "$sas_url" || echo "[error] Stack trace upload failed"
+    sleep "$UPLOAD_GAP"
+fi
+
+# counters
+if [[ -e "$counter_file" ]]; then
+    echo "[counter] Uploading counter trace..."
+    upload_to_blob "$counter_file" "$sas_url" || echo "[error] Counter trace upload failed"
+    sleep "$UPLOAD_GAP"
+fi
+echo "[done] All data collection and upload steps are complete. Hand off to Problem team. Have a great day!"
+##########################################
+# CLEANUP (OLD LOGIC)
+##########################################
+echo "[cleanup] Deleting diagnostic files in $WORKDIR..."
+rm -f "$trace_file" "$dump_file" "$stack_file" "$counter_file" 2>/dev/null || true
+echo "Completed"
 exit 0
