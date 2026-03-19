@@ -93,61 +93,47 @@ function is_external_url() {
 }
 
 ############################################
-# ARG PARSING
+# ARGUMENT-PARSING (ORDER-INDEPENDENT)
 ############################################
-while getopts ":t:l:f:hc" opt; do
+
+ARGS=("$@")
+
+threshold=""
+location=""
+frequency=""
+clean_flag=0
+
+# Parse OPTIONS (-t, -f, -l, -c, -h)
+OPTIND=1
+while getopts ":t:l:f:hc" opt "${ARGS[@]}"; do
   case $opt in
     t) threshold=$OPTARG ;;
     l) location=$OPTARG ;;
     f) frequency=$OPTARG ;;
     h) usage; exit 0 ;;
     c) clean_flag=1 ;;
-    *) die "Invalid option: -$OPTARG" 1 ;;
+    *) echo "Invalid option: -$OPTARG"; exit 1 ;;
   esac
 done
 
-shift $(( OPTIND - 1 ))
-
-# Teardown immediately if requested
-if [[ "${clean_flag:-0}" -eq 1 ]]; then
-  teardown
-fi
-
-# Default URL
-if [[ -z "${location:-}" ]]; then
-  echo "###Info: monitor default http://localhost:80"
-  location="http://localhost:80"
-fi
-
-# Default threshold
-if [[ -z "${threshold:-}" ]]; then
-  echo "###Info: threshold default 1000ms"
-  threshold=1000
-fi
-
-# Default frequency
-if [[ -z "${frequency:-}" ]]; then
-  echo "###Info: interval default 10s"
-  frequency=10
-fi
-
-############################################
-# enable-dump / enable-trace flags
-############################################
+# Parse POSITIONAL PARAMS (enable-dump-trace)
 enable_dump=false
 enable_trace=false
 
-if [[ "$#" -gt 0 ]]; then
-  case $1 in
-    enable-dump) enable_dump=true ;;
-    enable-trace) enable_trace=true ;;
+for arg in "${ARGS[@]}"; do
+  case "$arg" in
+    enable-dump)
+      enable_dump=true
+      ;;
+    enable-trace)
+      enable_trace=true
+      ;;
     enable-dump-trace)
       enable_dump=true
       enable_trace=true
       ;;
-    *) die "Unknown argument passed: $1" 1 ;;
   esac
-fi
+done
 
 ############################################
 # INSTALL curl & bc (old logic)
