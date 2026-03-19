@@ -207,7 +207,7 @@ fi
 ############################################
 # PREP LOG DIR
 ############################################
-output_dir="resptime-logs-$instance"
+output_dir="$WORKDIR/resptime-logs-$instance"
 mkdir -p "$output_dir"
 
 dump_lock_file="dump_taken_${instance}.lock"
