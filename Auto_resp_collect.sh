@@ -196,6 +196,7 @@ fi
 output_dir="$WORKDIR/resptime-logs-$instance"
 mkdir -p "$output_dir"
 
+
 dump_lock_file="dump_taken_${instance}.lock"
 trace_lock_file="trace_taken_${instance}.lock"
 
@@ -217,6 +218,10 @@ while true; do
   if [[ "$current_hour" != "$previous_hour" ]]; then
     output_file="$output_dir/resptime_stats_${current_hour}.log"
     previous_hour="$current_hour"
+    
+# Cleanup logs older than 2 days
+    find "$output_dir" -type f -name "resptime_stats_*.log" -mtime +2 -delete 2>/dev/null || true
+
   fi
 
   # Request handling identical to old logic
@@ -236,7 +241,7 @@ while true; do
     respTimeinMiliSeconds=$((timeout_seconds * 1000))
     echo "$(date '+%Y-%m-%d %H:%M:%S'): CURL request timed out (>${timeout_seconds}s)" >> "$output_file"
   else
-    respTimeinMiliSeconds=$(echo "$respTimeInSeconds*1000/1" | bc)
+    respTimeinMiliSeconds=$(echo "$respTimeInSeconds*1000/1" | bc 2>/dev/null || echo 0)
     echo "$(date '+%Y-%m-%d %H:%M:%S'): Response Time $respTimeinMiliSeconds (ms), Status Code $httpCode for $location" >> "$output_file"
   fi
 
