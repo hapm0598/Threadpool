@@ -69,7 +69,7 @@ function get_pid() {
     | grep "/usr/share/dotnet/dotnet" \
     | grep -v grep \
     | tr -s " " \
-    | awk '{print $2}' \
+    | cut -d" " -f2 \
     | head -n 1
 }
 
