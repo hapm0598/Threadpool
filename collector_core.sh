@@ -14,7 +14,13 @@ echo "[collector] Cleanup OK."
 ##########################################
 # CONFIG
 ##########################################
-WORKDIR="/home/Threadpool"
+
+# Detect instance name (App Service instance ID)
+instance=$(hostname)
+
+# WORKDIR unique for this instance
+WORKDIR="/home/${instance}-Troubleshooting"
+
 TOOLS_DIR="/tools"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
