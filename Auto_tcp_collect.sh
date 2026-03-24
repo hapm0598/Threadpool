@@ -79,7 +79,7 @@ shift $(( OPTIND - 1 ))
 # ------------------------------------------------------------
 enable_dump=false
 
-for arg in "${ARGS[@]}"; do
+for arg in "$@"; do
   case "$arg" in
     --enable-dump)
         enable_dump=true
