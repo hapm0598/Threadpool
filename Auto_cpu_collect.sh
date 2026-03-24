@@ -7,7 +7,12 @@ set -euo pipefail
 #
 
 script_name=${0##*/}
-WORKDIR="/home/Threadpool"
+# Detect instance name (App Service instance ID)
+instance=$(hostname)
+
+# WORKDIR unique for this instance
+WORKDIR="/home/${instance}-Troubleshooting
+
 COLLECTOR="$WORKDIR/collector_core.sh"
 mkdir -p "$WORKDIR"
 
@@ -108,7 +113,7 @@ echo "###Info: Detected $cores cores → CPU threshold = ${cpu_threshold}% (=${p
 ############################################
 
 instance=$(hostname)
-output_dir="$WORKDIR/cpustats-$instance"
+output_dir="$WORKDIR/cpustats"
 mkdir -p "$output_dir"
 
 find "$output_dir" -type f -name "cpu_stats_*.log" -mtime +2 -delete 2>/dev/null || true
