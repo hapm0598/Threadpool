@@ -65,7 +65,7 @@ ARGS=("$@")
 tcp_threshold=""
 frequency=""
 OPTIND=1
-while getopts ":t:f:h" opt "${ARGS[@]}"; do
+while getopts ":t:f:h" opt; do
   case $opt in
     t) tcp_threshold=$OPTARG ;;
     f) frequency=$OPTARG ;;
