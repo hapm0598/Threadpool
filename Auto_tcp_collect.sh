@@ -17,7 +17,47 @@ WORKDIR="/home/Troubleshooting/${instancehome}"
 COLLECTOR="$WORKDIR/collector_core.sh"
 mkdir -p "$WORKDIR"
 
+function die() {
+  echo "$1" && exit "${2:-1}"
+}
 
+function teardown() {
+  echo "Shutting down 'dotnet-trace collect' process..."
+  kill -SIGTERM $(ps -ef \
+        | grep "/tools/dotnet-trace" \
+        | grep -v grep \
+        | tr -s " " \
+        | cut -d" " -f2 \
+        | xargs) 2>/dev/null || true
+
+  echo "Shutting down 'dotnet-dump collect' process..."
+  kill -SIGTERM $(ps -ef \
+        | grep "/tools/dotnet-dump" \
+        | grep -v grep \
+        | tr -s " " \
+        | cut -d" " -f2 \
+        | xargs) 2>/dev/null || true
+
+  echo "Shutting down 'azcopy copy' process..."
+  kill -SIGTERM $(ps -ef \
+        | grep "/tools/azcopy" \
+        | grep -v grep \
+        | tr -s " " \
+        | cut -d" " -f2 \
+        | xargs) 2>/dev/null || true
+
+  echo "Shutting down $script_name process..."
+  kill -SIGTERM $(ps -ef \
+        | grep "$script_name" \
+        | grep -v grep \
+        | tr -s " " \
+        | cut -d" " -f2 \
+        | xargs) 2>/dev/null || true
+
+  echo "Finishing up..."
+  echo "Completed"
+  exit 0
+}
 # ------------------------------------------------------------
 # ARGUMENT PARSER
 # ------------------------------------------------------------
