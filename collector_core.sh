@@ -19,7 +19,7 @@ echo "[collector] Cleanup OK."
 instancehome=$(hostname)
 
 # WORKDIR unique for this instance
-WORKDIR="/home/${instancehome}-Troubleshooting"
+WORKDIR="/home/Troubleshooting/${instancehome}"
 
 TOOLS_DIR="/tools"
 mkdir -p "$WORKDIR"
