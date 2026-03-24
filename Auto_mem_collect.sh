@@ -13,7 +13,7 @@ script_name=${0##*/}
 instancehome=$(hostname)
 
 # WORKDIR unique for this instance
-WORKDIR="/home/${instancehome}-Troubleshooting"
+WORKDIR="/home/Troubleshooting/${instancehome}"
 
 COLLECTOR="$WORKDIR/collector_core.sh"
 mkdir -p "$WORKDIR"
