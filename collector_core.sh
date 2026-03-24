@@ -16,7 +16,7 @@ echo "[collector] Cleanup OK."
 ##########################################
 
 # Detect instance name (App Service instance ID)
-instance=$(hostname)
+instance=$(get_env_from_pid "$pid" "COMPUTERNAME")
 
 # WORKDIR unique for this instance
 WORKDIR="/home/${instance}-Troubleshooting"
@@ -78,7 +78,6 @@ get_env_from_pid() {
     echo "${val:-}"
 }
 
-instance=$(get_env_from_pid "$pid" "COMPUTERNAME")
 sas_url=$(get_env_from_pid "$pid" "DIAGNOSTICS_AZUREBLOBCONTAINERSASURL")
 
 if [[ -z "$instance" ]]; then
