@@ -8,7 +8,13 @@ set -euo pipefail
 #
 
 script_name=${0##*/}
-WORKDIR="/home/Threadpool"
+
+# Detect instance name (App Service instance ID)
+instance=$(hostname)
+
+# WORKDIR unique for this instance
+WORKDIR="/home/${instance}-Troubleshooting
+
 COLLECTOR="$WORKDIR/collector_core.sh"
 mkdir -p "$WORKDIR"
 
@@ -64,7 +70,7 @@ frequency=${frequency:-10}
 ############################################
 
 instance=$(hostname)
-output_dir="$WORKDIR/memstats-$instance"
+output_dir="$WORKDIR/memstats"
 mkdir -p "$output_dir"
 
 # Cleanup >2 days
