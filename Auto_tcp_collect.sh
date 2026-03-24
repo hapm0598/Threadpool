@@ -64,7 +64,7 @@ function teardown() {
 ARGS=("$@")
 tcp_threshold=""
 frequency=""
-
+OPTIND=1
 while getopts ":t:f:h" opt "${ARGS[@]}"; do
   case $opt in
     t) tcp_threshold=$OPTARG ;;
