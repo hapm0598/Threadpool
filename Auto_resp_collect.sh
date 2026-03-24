@@ -8,7 +8,12 @@ set -euo pipefail
 
 script_name=${0##*/}
 
-WORKDIR="/home/Threadpool"
+# Detect instance name (App Service instance ID)
+instance=$(hostname)
+
+# WORKDIR unique for this instance
+WORKDIR="/home/${instance}-Troubleshooting
+
 COLLECTOR="$WORKDIR/collector_core.sh"
 mkdir -p "$WORKDIR"
 
@@ -193,7 +198,7 @@ fi
 ############################################
 # PREP LOG DIR
 ############################################
-output_dir="$WORKDIR/resptime-logs-$instance"
+output_dir="$WORKDIR/resptime-logs"
 mkdir -p "$output_dir"
 
 
