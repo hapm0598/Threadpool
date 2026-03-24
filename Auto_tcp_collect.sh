@@ -33,7 +33,7 @@ while getopts ":t:f:h" opt "${ARGS[@]}"; do
     *) echo "Invalid option: -$OPTARG"; exit 1 ;;
   esac
 done
-
+shift $(( OPTIND - 1 ))
 # ------------------------------------------------------------
 # PARSE POSITIONAL FLAGS (for --enable-dump)
 # ------------------------------------------------------------
