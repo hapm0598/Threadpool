@@ -8,7 +8,7 @@ set -euo pipefail
 
 script_name=${0##*/}
 # Detect instance name (App Service instance ID)
-instance=$(hostname)
+instance=$(get_env_from_pid "$pid" "COMPUTERNAME")
 
 # WORKDIR unique for this instance
 WORKDIR="/home/${instance}-Troubleshooting
