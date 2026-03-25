@@ -293,7 +293,7 @@ while true; do
     previous_hour="$current_hour"
     
 # Cleanup logs older than 2 days
-    find "$output_dir" -type f -name "resptime_stats_*.log" -mtime +2 -delete 2>/dev/null || true
+    find "$output_dir" -type f -name "resptime_stats_*.log" -mtime +3 -delete 2>/dev/null || true
 
   fi
 
