@@ -278,7 +278,7 @@ while true; do
   if [[ "$current_hour" != "$previous_hour" ]]; then
     output_file="$output_dir/tcp_stats_${current_hour}.log"
     previous_hour="$current_hour"
-    find "$output_dir" -type f -name "tcp_stats_*.log" -mtime +2 -delete 2>/dev/null || true
+    find "$output_dir" -type f -name "tcp_stats_*.log" -mtime +3 -delete 2>/dev/null || true
   fi
 
   if [[ -n "$max_seconds" ]]; then
