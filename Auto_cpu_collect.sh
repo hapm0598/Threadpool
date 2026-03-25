@@ -11,7 +11,7 @@ script_name=${0##*/}
 ##########################################
 # PID DETECTION (OLD WORKING PIPELINE)
 ##########################################
-tools/dotnet-dump ps \
+/tools/dotnet-dump ps \
 | grep /usr/share/dotnet/dotnet \
 | grep -v grep \
 | tr -s " " \
