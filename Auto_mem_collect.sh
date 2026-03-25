@@ -147,7 +147,7 @@ output_dir="$WORKDIR/memstats"
 mkdir -p "$output_dir"
 
 # Cleanup >2 days
-find "$output_dir" -type f -name "mem_stats_*.log" -mtime +2 -delete 2>/dev/null || true
+find "$output_dir" -type f -name "mem_stats_*.log" -mtime +3 -delete 2>/dev/null || true
 
 ############################################
 # START MONITOR
