@@ -300,7 +300,7 @@ mkdir -p "$output_dir"
 dump_lock_file="dump_taken_${instance}.lock"
 trace_lock_file="trace_taken_${instance}.lock"
 
-timeout_seconds=$(( (threshold + 5000) / 1000 ))
+timeout_seconds=$(( (threshold + 3000) / 1000 ))
 
 url="${location#*://}"
 host_and_port="${url%%/*}"
