@@ -100,6 +100,14 @@ function getcomputername()
   echo "$instance"
 }
 
+function get_website_instance_id()
+{
+  local proc_pid="$1"
+  local instance_id
+  instance_id=$(cat "/proc/$proc_pid/environ" | tr '\0' '\n' | grep -w WEBSITE_INSTANCE_ID | cut -d'=' -f2 || true)
+  echo "$instance_id"
+}
+
 # URL external check
 function is_external_url() {
   local url="$1"
@@ -260,6 +268,29 @@ else
 fi
 
 ############################################
+# GET WEBSITE_INSTANCE_ID FOR ARR AFFINITY
+############################################
+website_instance_id=""
+if [[ $is_external -eq 0 ]]; then
+  # For external URLs, find dotnet pid if not already found
+  if [[ -z "$pid" ]]; then
+    pid=$(/tools/dotnet-dump ps \
+          | grep /usr/share/dotnet/dotnet \
+          | grep -v grep \
+          | tr -s " " \
+          | cut -d" " -f2 || true)
+  fi
+  if [[ -n "$pid" ]]; then
+    website_instance_id=$(get_website_instance_id "$pid")
+  fi
+  if [[ -n "$website_instance_id" ]]; then
+    echo "###Info: ARR Affinity pinned to instance: $website_instance_id"
+  else
+    echo "###Warning: WEBSITE_INSTANCE_ID not found, external URL will be monitored without ARR Affinity pinning"
+  fi
+fi
+
+############################################
 # PREP LOG DIR
 ############################################
 output_dir="$WORKDIR/resptime-logs"
@@ -284,6 +315,7 @@ previous_hour=""
 output_file=""
 start_ts=$(date +%s)
 breach_start_ts=""
+last_warned_code=""
 
 while true; do
 
@@ -293,7 +325,7 @@ while true; do
     previous_hour="$current_hour"
     
 # Cleanup logs older than 2 days
-    find "$output_dir" -type f -name "resptime_stats_*.log" -mtime +3 -delete 2>/dev/null || true
+    find "$output_dir" -type f -name "resptime_stats_*.log" -mtime +2 -delete 2>/dev/null || true
 
   fi
 
@@ -305,13 +337,20 @@ while true; do
     fi
   fi
 
-  # Request handling identical to old logic
+  # Request handling:
+  # - External (custom hostname): call via internet pinned to current instance via ARRAffinitySameSite cookie
+  # - Internal (http://localhost*): resolve to 127.0.0.1
   if [[ $is_external -eq 0 ]]; then
-    read -r respTimeInSeconds httpCode <<< $(curl -so /dev/null -w "%{time_total} %{http_code}" -m $timeout_seconds "$location")
+    # External/custom hostname: send request via internet, pin to current instance via ARR Affinity
+    if [[ -n "$website_instance_id" ]]; then
+      read -r respTimeInSeconds httpCode <<< $(curl -so /dev/null -w "%{time_total} %{http_code}" -m $timeout_seconds \
+        -H "Cookie: ARRAffinitySameSite=$website_instance_id" "$location")
+    else
+      read -r respTimeInSeconds httpCode <<< $(curl -so /dev/null -w "%{time_total} %{http_code}" -m $timeout_seconds "$location")
+    fi
   elif [[ "$location" == "http://localhost"* ]]; then
+    # Internal localhost with explicit resolve
     read -r respTimeInSeconds httpCode <<< $(curl -so /dev/null -w "%{time_total} %{http_code}" -m $timeout_seconds "$location" --resolve "$host_and_port":127.0.0.1)
-  else
-    read -r respTimeInSeconds httpCode <<< $(curl -so /dev/null -w "%{time_total} %{http_code}" -m $timeout_seconds -H "Host:$host_and_port" "http://localhost")
   fi
 
   curl_code=$?
@@ -322,6 +361,80 @@ while true; do
   else
     respTimeinMiliSeconds=$(echo "$respTimeInSeconds*1000/1" | bc 2>/dev/null || echo 0)
     echo "$(date '+%Y-%m-%d %H:%M:%S'): Response Time $respTimeinMiliSeconds (ms), Status Code $httpCode for $location" >> "$output_file"
+  fi
+
+  ############################################
+  # HTTP CODE VALIDATION
+  ############################################
+  if [[ $curl_code -ne 28 ]]; then
+    if [[ "$httpCode" != "$last_warned_code" ]]; then
+      if [[ "$httpCode" == "000" ]]; then
+        echo ""
+        echo "=========================================================="
+        echo "[WARNING] No response received from: $location"
+        echo "  HTTP Code : 000 (connection failed / no response)"
+        echo "  Possible causes:"
+        echo "    - Kestrel has not started yet or has crashed"
+        echo "    - Wrong port (script uses :80 by default)"
+        echo "    - Container is restarting"
+        echo "  Action: verify the app is running, then restart this script"
+        echo "=========================================================="
+        echo ""
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): [WARNING] HTTP 000 - No response from $location" >> "$output_file"
+        last_warned_code="$httpCode"
+
+      elif [[ "$httpCode" =~ ^3 ]]; then
+        echo ""
+        echo "=========================================================="
+        echo "[WARNING] URL is returning a REDIRECT (HTTP $httpCode)"
+        echo "  Monitored URL : $location"
+        echo "  This URL redirects elsewhere and may not reflect actual"
+        echo "  app response time accurately."
+        echo "  Action: replace with a direct endpoint that returns 200,"
+        echo "          e.g. a /health or /ping endpoint"
+        echo "  Tip: run the following to find the redirect target:"
+        echo "    curl -sI -H \"Host:$host_and_port\" http://localhost | grep -i location"
+        echo "=========================================================="
+        echo ""
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): [WARNING] HTTP $httpCode - Redirect detected for $location" >> "$output_file"
+        last_warned_code="$httpCode"
+
+      elif [[ "$httpCode" =~ ^4 ]]; then
+        echo ""
+        echo "=========================================================="
+        echo "[WARNING] URL returned a client error (HTTP $httpCode)"
+        echo "  Monitored URL : $location"
+        case "$httpCode" in
+          401|403) echo "  Reason: authentication/authorization required" ;;
+          404)     echo "  Reason: endpoint does not exist" ;;
+          *)       echo "  Reason: client-side error" ;;
+        esac
+        echo "  Action: replace with a valid endpoint that returns 200,"
+        echo "          e.g. a /health or /ping endpoint"
+        echo "=========================================================="
+        echo ""
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): [WARNING] HTTP $httpCode - Client error for $location" >> "$output_file"
+        last_warned_code="$httpCode"
+
+      elif [[ "$httpCode" =~ ^5 ]]; then
+        echo ""
+        echo "=========================================================="
+        echo "[WARNING] URL returned a server error (HTTP $httpCode)"
+        echo "  Monitored URL : $location"
+        echo "  Reason: the application is experiencing an internal error"
+        echo "  Action: check app logs for errors; monitoring continues"
+        echo "=========================================================="
+        echo ""
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): [WARNING] HTTP $httpCode - Server error for $location" >> "$output_file"
+        last_warned_code="$httpCode"
+
+      elif [[ "$httpCode" == "200" ]]; then
+        if [[ -n "$last_warned_code" ]]; then
+          echo "$(date '+%Y-%m-%d %H:%M:%S'): [RECOVERED] HTTP code back to 200 for $location" >> "$output_file"
+        fi
+        last_warned_code=""
+      fi
+    fi
   fi
 
   ############################################
